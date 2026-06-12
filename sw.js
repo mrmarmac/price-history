@@ -1,6 +1,6 @@
 /* Service worker for Price History.
  * Release process: bump CACHE_NAME on every deploy. */
-const CACHE_NAME = 'ph-v2';
+const CACHE_NAME = 'ph-v3';
 
 const PRECACHE = [
   './',

@@ -89,6 +89,30 @@ test('EDEKA: plain items incl. Pfand deposit, umlauts survive', () => {
   assert.equal(byName(r.lines, 'posten'), undefined);
 });
 
+test('date extraction is OCR-tolerant and prefers labelled/footer dates', () => {
+  const parse = (text) => parseReceipt(text, { stores: STORES }).dateISO;
+
+  // OCR spacing and separator variants
+  assert.equal(parse('MILCH 2,29 B\nDatum: 21 . 02 . 2026'), '2026-02-21');
+  assert.equal(parse('MILCH 2,29 B\nDatum: 21-02-2026'), '2026-02-21');
+  assert.equal(parse('MILCH 2,29 B\n2026-02-21'), '2026-02-21');
+
+  // date on its own line (label printed on the next line, common OCR split)
+  assert.equal(parse('MILCH 2,29 B\n21.02.2026\nDatum:'), '2026-02-21');
+
+  // a best-before date in the future is not the receipt date
+  assert.equal(parse('HALTBAR BIS 01.01.2099\nMILCH 2,29 B\nDatum: 21.02.2026'), '2026-02-21');
+
+  // labelled date beats unlabelled candidates elsewhere on the receipt
+  assert.equal(parse('GEDRUCKT 20.02.2026\nDatum: 21.02.2026'), '2026-02-21');
+
+  // no date at all → null (the wizard falls back to scan date and warns)
+  assert.equal(parse('MILCH 2,29 B\nSUMME EUR 2,29'), null);
+
+  // times never become dates
+  assert.equal(parse('MILCH 2,29 B\nUhrzeit: 09:18:27 Uhr'), null);
+});
+
 test('Tesco: multi-buy bundle, Clubcard discount, weighed bananas, UK date', () => {
   const r = parseReceipt(fx.TESCO_MULTIBUY, { stores: STORES });
 

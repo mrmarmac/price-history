@@ -33,8 +33,9 @@ const RE_EACH = /(?:€|£|\$)?\s*(\d+[.,]\d{2})\s*each/i;
 // Tesco-style leading quantity: "2  Tesco Finest ... £5.80"
 const RE_LEAD_QTY = /^\s*([1-9]\d?)\s+(\S.*)$/;
 
-// dates: 23.02.2026 | 02/05/2026 | 2026-02-23 (day-first for . and /)
-const RE_DATE_DMY = /(\d{1,2})[./](\d{1,2})[./](\d{2,4})/;
+// dates: 23.02.2026 | 02/05/2026 | 23-02-2026 | 2026-02-23 (day-first for
+// non-ISO). OCR often inserts spaces around separators ("21 . 02 . 2026").
+const RE_DATE_DMY = /(\d{1,2}) ?[./-] ?(\d{1,2}) ?[./-] ?(\d{2,4})/;
 const RE_DATE_ISO = /(\d{4})-(\d{2})-(\d{2})/;
 
 const DISCOUNT_WORDS = /rabatt|nachlass|aktionspreis|discount|coupon|cc\s|any\s*\d\s*for/i;
@@ -76,6 +77,35 @@ function parseDateToken(line) {
 function toISO(y, mo, d) {
   if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
   return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/* A receipt date must be recent past: not in the future (beyond tomorrow,
+ * to absorb timezones) and not older than ~5 years. Filters out best-before
+ * dates, OCR junk, and misread times. */
+function plausibleReceiptDate(iso) {
+  const t = new Date(iso + 'T12:00:00').getTime();
+  if (!Number.isFinite(t)) return false;
+  const now = Date.now();
+  return t <= now + 86400e3 && t >= now - 5 * 365 * 86400e3;
+}
+
+/* Scan ALL lines for date candidates instead of taking the first hit.
+ * Preference: a line labelled Datum/Date wins; otherwise the LAST plausible
+ * candidate (receipts print the date in the footer, so late beats early,
+ * and header false-positives lose). */
+function extractDate(rawLines) {
+  let labeled = null;
+  let unlabeled = null;
+  for (const line of rawLines) {
+    const iso = parseDateToken(line);
+    if (!iso || !plausibleReceiptDate(iso)) continue;
+    if (/datum|date/i.test(line)) {
+      if (!labeled) labeled = iso;
+    } else {
+      unlabeled = iso;
+    }
+  }
+  return labeled || unlabeled;
 }
 
 function cleanName(s) {
@@ -156,22 +186,16 @@ export function parseReceipt(text, opts = {}) {
       .trim())
     .filter(Boolean);
 
-  let dateISO = null;
   const items = [];
   let pendingName = null; // name-only line waiting for its price/detail line
   let last = null;        // last emitted item, for detail/discount attachment
 
   const currencyGuess = guessCurrency(text);
   const storeGuess = guessStore(rawLines, stores);
+  // dates sit on noise lines ("Datum: 23.02.2026"), so scan before filtering
+  const dateISO = extractDate(rawLines);
 
   for (const line of rawLines) {
-    // date can sit on a noise line ("Datum: 23.02.2026") — check first
-    if (!dateISO) {
-      const iso = parseDateToken(line);
-      if (iso && /datum|date|\d{1,2}:\d{2}/i.test(line)) dateISO = iso;
-      else if (iso && !dateISO) dateISO = dateISO || iso;
-    }
-
     if (NOISE.test(line)) { pendingName = null; continue; }
 
     /* --- weighed goods: "0,234 kg x 2,99 EUR/kg [0,70 B]" --- */

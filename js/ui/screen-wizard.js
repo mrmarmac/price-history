@@ -119,6 +119,7 @@ export async function runWizard(container, { manual }) {
         state.meta.currency = parsed.storeGuess.currency_default;
       }
       if (parsed.currencyGuess) state.meta.currency = parsed.currencyGuess;
+      state.meta.dateFromReceipt = !!parsed.dateISO;
       if (parsed.dateISO) state.meta.date = parsed.dateISO;
       state.lines = parsed.lines.map((l) => ({
         ...l,
@@ -161,11 +162,18 @@ export async function runWizard(container, { manual }) {
     const curSel = select(['EUR', 'GBP', 'AUD'].map((c) => ({ value: c, label: c })), state.meta.currency, {
       onchange: () => { state.meta.currency = curSel.value; },
     });
+    const dateNote = manual
+      ? el('p.small.dim', {}, 'If the receipt has no date, the scan date (today) is used.')
+      : state.meta.dateFromReceipt
+        ? el('p.small', {}, el('span.badge.good', {}, '✓ Date read from receipt'))
+        : el('p.small', {},
+            el('span.badge.warn', {}, '⚠ No date found on the receipt'),
+            el('span.dim', {}, " — today's date is prefilled, please check it."));
     container.append(
       el('div.card.stack', {},
         field('Store', storeSel),
         el('div.field-row', {}, field('Receipt date', dateInput), field('Currency', curSel)),
-        el('p.small.dim', {}, 'If the receipt has no date, the scan date (today) is used.'),
+        dateNote,
       ),
       el('div.row.mt', {},
         !manual && el('button.btn-ghost', { onclick: () => go('CAPTURE') }, 'Back'),
