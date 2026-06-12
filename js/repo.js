@@ -14,8 +14,10 @@ export const COUNTRIES = ['DE', 'UK', 'AU'];
 
 /* ---------- stores / categories ---------- */
 
-export const listStores = () => db.getAll('stores');
-export const listCategories = () => db.getAll('categories');
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+export const listStores = async () => (await db.getAll('stores')).sort(byName);
+export const listCategories = async () => (await db.getAll('categories')).sort(byName);
 
 export function saveStore(store) {
   if (!store.name || !store.name.trim()) throw new Error('Store name is required');
