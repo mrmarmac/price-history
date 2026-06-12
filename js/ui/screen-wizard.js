@@ -6,6 +6,7 @@
 
 import { el, field, select, toast, priceText } from './components.js';
 import * as repo from '../repo.js';
+import * as db from '../db.js';
 import { parseReceipt } from '../parser.js';
 import { recognizeReceipt } from '../ocr.js';
 import { parsePrice, formatMinor } from '../money.js';
@@ -20,13 +21,17 @@ export async function render(container) {
 }
 
 export async function runWizard(container, { manual }) {
-  const stores = await repo.listStores();
+  const stores = (await repo.listStores()).sort((a, b) => a.name.localeCompare(b.name));
   const categories = await repo.listCategories();
   const products = await repo.listProducts();
 
+  // default to the store used last time
+  const lastStoreId = (await db.get('meta', 'lastStoreId'))?.value;
+  const defaultStore = stores.find((s) => s.id === lastStoreId) || stores[0] || null;
+
   const state = {
     step: manual ? 'META_CONFIRM' : 'CAPTURE',
-    meta: { storeId: stores[0]?.id || null, date: today(), currency: stores[0]?.currency_default || 'EUR' },
+    meta: { storeId: defaultStore?.id || null, date: today(), currency: defaultStore?.currency_default || 'EUR' },
     lines: manual ? [emptyLine()] : [],
     cursor: 0,
     saved: [],
@@ -324,8 +329,10 @@ export async function runWizard(container, { manual }) {
     drawMatches();
     toggleNewProduct();
 
+    if (line.rawText) {
+      container.append(el('p.small.dim', {}, 'Receipt text: ', el('em', {}, line.rawText)));
+    }
     container.append(
-      line.rawText ? el('p.small.dim', {}, 'Receipt text: ', el('em', {}, line.rawText)) : null,
       matchBox,
       el('div.card.stack.mt', {},
         newProductFields,
@@ -390,6 +397,9 @@ export async function runWizard(container, { manual }) {
       } catch (err) {
         state.failed.push({ line, error: err.message });
       }
+    }
+    if (state.saved.length) {
+      await db.put('meta', { key: 'lastStoreId', value: state.meta.storeId }).catch(() => {});
     }
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
