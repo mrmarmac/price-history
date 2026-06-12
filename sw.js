@@ -1,6 +1,6 @@
 /* Service worker for Price History.
  * Release process: bump CACHE_NAME on every deploy. */
-const CACHE_NAME = 'ph-v4';
+const CACHE_NAME = 'ph-v5';
 
 const PRECACHE = [
   './',
@@ -37,7 +37,10 @@ const PRECACHE = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE))
+      // cache: 'reload' bypasses the browser HTTP cache — GitHub Pages serves
+      // with max-age=600, and without this a new SW version can precache the
+      // OLD files and pin the app to a stale release.
+      .then((cache) => cache.addAll(PRECACHE.map((u) => new Request(u, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
 });
