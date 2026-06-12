@@ -9,8 +9,8 @@ import * as repo from '../repo.js';
 import * as db from '../db.js';
 import { parseReceipt } from '../parser.js';
 import { recognizeReceipt } from '../ocr.js';
-import { parsePrice, formatMinor } from '../money.js';
-import { UNITS } from '../units.js';
+import { parsePrice, formatMinor, roundMinor } from '../money.js';
+import { UNITS, toReferenceQuantity, referenceUnitFor, computeUnitPrice } from '../units.js';
 import { findMatches } from '../match.js';
 import { suggestEnglishName } from '../dictionary.js';
 
@@ -280,12 +280,6 @@ export async function runWizard(container, { manual }) {
       [{ value: '', label: '— pick category —' }, ...categories.map((c) => ({ value: c.id, label: c.name }))],
       line.categoryId || '',
     );
-    const size = el('input', { value: line.size, inputmode: 'decimal' });
-    const unitSel = select(UNITS.map((u) => ({ value: u, label: u })), line.unit);
-    const price = el('input', { value: line.totalMinor != null ? (line.totalMinor / 100).toFixed(2) : '', inputmode: 'decimal', placeholder: '0.00' });
-    const qty = el('input', { value: line.quantity, type: 'number', min: 1 });
-    const typeSel = select(repo.PRICE_TYPES.map((t) => ({ value: t, label: t })), line.price_type);
-
     let chosenProduct = line.productId ? products.find((p) => p.id === line.productId) : null;
 
     const matchBox = el('div.stack');
@@ -329,17 +323,15 @@ export async function runWizard(container, { manual }) {
     drawMatches();
     toggleNewProduct();
 
+    const pricing = pricingCard(line, state.meta.currency);
+
     if (line.rawText) {
       container.append(el('p.small.dim', {}, 'Receipt text: ', el('em', {}, line.rawText)));
     }
     container.append(
       matchBox,
-      el('div.card.stack.mt', {},
-        newProductFields,
-        el('div.field-row', {}, field('Size', size), field('Unit', unitSel)),
-        el('div.field-row', {}, field(`Total price (${state.meta.currency})`, price), field('Quantity', qty)),
-        field('Price type', typeSel),
-      ),
+      el('div.card.stack.mt', {}, newProductFields),
+      pricing.node,
       el('div.row.mt', {},
         el('button.btn-ghost', {
           onclick: () => {
@@ -352,23 +344,21 @@ export async function runWizard(container, { manual }) {
         }, 'Skip') : null,
         el('button.btn-primary.grow', {
           onclick: () => {
-            const p = parsePrice(price.value);
-            if (!p) return toast('Enter the price', 'bad');
             if (!chosenProduct && !name.value.trim()) return toast('Enter an item name', 'bad');
             if (!chosenProduct && !catSel.value) return toast('Pick a category — it powers substitute comparisons', 'bad');
-            const sz = Number(String(size.value).replace(',', '.'));
-            if (!Number.isFinite(sz) || sz <= 0) return toast('Size must be greater than zero', 'bad');
+            const result = pricing.read();
+            if (result.error) return toast(result.error, 'bad');
             line.resolution = {
               product: chosenProduct ? { id: chosenProduct.id } : {
                 name: name.value.trim(), brand: brand.value.trim(), categoryId: catSel.value,
               },
-              pkg: { size: sz, unit: unitSel.value },
+              pkg: result.pkg,
               obs: {
                 storeId: state.meta.storeId,
-                total_price: p.minor,
-                currency: p.currency || state.meta.currency,
-                quantity: Number(qty.value) || 1,
-                price_type: typeSel.value,
+                total_price: result.totalMinor,
+                currency: state.meta.currency,
+                quantity: result.quantity,
+                price_type: line.discountMinor ? 'promo' : result.price_type,
                 date: state.meta.date || today(),
               },
             };
@@ -379,6 +369,173 @@ export async function runWizard(container, { manual }) {
         }, state.cursor + 1 < state.lines.length ? 'Save & next' : 'Save all'),
       ),
     );
+  }
+
+  /* ---------- pricing card: "How did you buy it?" ----------
+   * Three plain-language modes instead of raw size/qty/price_type fields:
+   *   pack     — a shelf-priced item or pack (200 g butter, carton of 6 eggs)
+   *   weighed  — priced by weight/volume at the till (1.015 kg bananas @ 0.90/kg)
+   *   multibuy — one deal price across several items ("any 2 for £5")
+   */
+  function pricingCard(line, currency) {
+    const initialMode =
+      (line.price_type === 'weighted' || line.price_type === 'per_weight') ? 'weighed'
+      : (line.price_type === 'bundle' || (line.price_type === 'per_unit' && line.quantity > 1)) ? 'multibuy'
+      : 'pack';
+    let mode = initialMode;
+
+    const moneyVal = (minor) => (minor != null ? (minor / 100).toFixed(2) : '');
+    const num = (input) => {
+      const v = Number(String(input.value).trim().replace(',', '.'));
+      return Number.isFinite(v) ? v : null;
+    };
+
+    /* shared inputs, prefilled from the parsed line */
+    const packSize = el('input', { value: line.unit === 'pcs' && line.size === 1 ? 1 : line.size, inputmode: 'decimal' });
+    const packUnit = select(UNITS.map((u) => ({ value: u, label: u })), line.unit);
+    const packTotal = el('input', { value: moneyVal(line.totalMinor), inputmode: 'decimal', placeholder: '0.00' });
+    const packCount = el('input', { value: 1, type: 'number', min: 1 });
+
+    const weighedQty = el('input', { value: line.price_type === 'weighted' ? line.size : '', inputmode: 'decimal', placeholder: '1.015' });
+    const weighedUnit = select(['kg', 'g', 'l', 'ml'].map((u) => ({ value: u, label: u })), ['kg', 'g', 'l', 'ml'].includes(line.unit) ? line.unit : 'kg');
+    const weighedPer = el('input', { value: moneyVal(line.perItemMinor), inputmode: 'decimal', placeholder: '0.90' });
+    const weighedTotal = el('input', { value: moneyVal(line.totalMinor), inputmode: 'decimal', placeholder: '0.91' });
+
+    const dealCount = el('input', { value: Math.max(line.quantity, 2), type: 'number', min: 2 });
+    const dealSize = el('input', { value: line.size, inputmode: 'decimal' });
+    const dealUnit = select(UNITS.map((u) => ({ value: u, label: u })), line.unit);
+    const dealTotal = el('input', { value: moneyVal(line.totalMinor), inputmode: 'decimal', placeholder: '5.00' });
+
+    /* weighed mode: per-unit price ⇄ total stay in sync */
+    function syncWeighed(from) {
+      const qty = num(weighedQty);
+      const unit = weighedUnit.value;
+      const ref = qty ? toReferenceQuantity(qty, unit) : null;
+      if (!ref) return;
+      if (from !== 'total') {
+        const per = parsePrice(weighedPer.value);
+        if (per) weighedTotal.value = ((per.minor * ref) / 100).toFixed(2);
+      } else {
+        const total = parsePrice(weighedTotal.value);
+        if (total) weighedPer.value = ((total.minor / ref) / 100).toFixed(2);
+      }
+      updatePreview();
+    }
+    weighedQty.addEventListener('input', () => syncWeighed('qty'));
+    weighedUnit.addEventListener('change', () => syncWeighed('qty'));
+    weighedPer.addEventListener('input', () => syncWeighed('per'));
+    weighedTotal.addEventListener('input', () => syncWeighed('total'));
+    for (const i of [packSize, packTotal, packCount, dealCount, dealSize, dealTotal]) {
+      i.addEventListener('input', updatePreview);
+    }
+    for (const s of [packUnit, dealUnit]) s.addEventListener('change', updatePreview);
+
+    const HELP = {
+      pack: 'A shelf-priced item or pack — e.g. a 200 g butter block, a carton of 6 eggs, a 1 l milk.',
+      weighed: 'Priced by weight at the till — e.g. 1.015 kg of bananas at 0.90 per kg. Enter either the per-kg price or the total; the other fills in.',
+      multibuy: 'One deal price for several items — e.g. two 6-packs of eggs, any 2 for £5.',
+    };
+
+    const body = el('div.stack');
+    const help = el('p.small.dim', { style: 'margin:0' });
+    const preview = el('p.small', { style: 'margin:0' });
+
+    const tabs = el('div.segmented', {},
+      ['pack', 'weighed', 'multibuy'].map((m) =>
+        el('button.seg' + (m === mode ? '.active' : ''), {
+          type: 'button',
+          dataset: { mode: m },
+          onclick: (ev) => {
+            mode = m;
+            tabs.querySelectorAll('.seg').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
+            drawBody();
+          },
+        }, { pack: 'Pack / item', weighed: 'Weighed', multibuy: 'Multi-buy deal' }[m])),
+    );
+
+    function drawBody() {
+      help.textContent = HELP[mode];
+      body.innerHTML = '';
+      if (mode === 'pack') {
+        body.append(
+          el('div.field-row', {}, field('Pack size', packSize), field('Unit', packUnit)),
+          el('div.field-row', {}, field(`Total paid (${currency})`, packTotal), field('Packs bought', packCount)),
+        );
+      } else if (mode === 'weighed') {
+        body.append(
+          el('div.field-row', {}, field('Weight / volume', weighedQty), field('Unit', weighedUnit)),
+          el('div.field-row', {},
+            field(`Price per ${referenceUnitFor(weighedUnit.value) || 'kg'} (${currency})`, weighedPer),
+            field(`Total paid (${currency})`, weighedTotal)),
+        );
+      } else {
+        body.append(
+          el('div.field-row', {}, field('Items in deal', dealCount), field('Size of one item', el('div.field-row', {}, dealSize, dealUnit))),
+          field(`Deal total paid (${currency})`, dealTotal),
+        );
+      }
+      updatePreview();
+    }
+
+    /* read() → {pkg, totalMinor, quantity, price_type} or {error} */
+    function read() {
+      if (mode === 'pack') {
+        const size = num(packSize);
+        const total = parsePrice(packTotal.value);
+        const count = Math.max(1, Math.round(num(packCount) ?? 1));
+        if (!size || size <= 0) return { error: 'Pack size must be greater than zero' };
+        if (!total || total.minor <= 0) return { error: 'Enter the total you paid' };
+        return {
+          pkg: { size, unit: packUnit.value },
+          totalMinor: total.minor,
+          quantity: count,
+          price_type: count > 1 ? 'per_unit' : 'single',
+        };
+      }
+      if (mode === 'weighed') {
+        const qty = num(weighedQty);
+        const total = parsePrice(weighedTotal.value);
+        if (!qty || qty <= 0) return { error: 'Enter the weight or volume' };
+        if (!total || total.minor <= 0) return { error: 'Enter the per-unit price or the total — the other fills in' };
+        return {
+          pkg: { size: qty, unit: weighedUnit.value },
+          totalMinor: total.minor,
+          quantity: 1,
+          price_type: 'weighted',
+        };
+      }
+      const count = Math.max(2, Math.round(num(dealCount) ?? 2));
+      const size = num(dealSize);
+      const total = parsePrice(dealTotal.value);
+      if (!size || size <= 0) return { error: 'Enter the size of one item' };
+      if (!total || total.minor <= 0) return { error: 'Enter the deal total' };
+      return {
+        pkg: { size, unit: dealUnit.value },
+        totalMinor: total.minor,
+        quantity: count,
+        price_type: 'bundle',
+      };
+    }
+
+    function updatePreview() {
+      preview.innerHTML = '';
+      const r = read();
+      if (r.error) return;
+      const parts = [];
+      if (r.quantity > 1) {
+        parts.push(`${formatMinor(roundMinor(r.totalMinor / r.quantity), currency)} each`);
+      }
+      const up = computeUnitPrice(r.totalMinor, r.pkg.size, r.pkg.unit, r.quantity);
+      if (up) parts.push(`${formatMinor(up.unit_price, currency)} / ${up.reference_unit}`);
+      if (parts.length) preview.append(el('span.badge.good', {}, '= ' + parts.join(' · ')));
+    }
+
+    drawBody();
+    const node = el('div.card.stack.mt', {},
+      el('label', { style: 'margin:0' }, 'How did you buy it?'),
+      tabs, help, body, preview,
+    );
+    return { node, read };
   }
 
   /* ---------- SAVING / DONE ---------- */

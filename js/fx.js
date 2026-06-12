@@ -9,7 +9,13 @@
 import { roundMinor } from './money.js';
 import * as db from './db.js';
 
-const API = 'https://api.frankfurter.app';
+/* Frankfurter moved to api.frankfurter.dev (v1); the legacy .app host is
+ * kept as a fallback. Both return the same JSON shape. */
+const ENDPOINTS = [
+  (date) => `https://api.frankfurter.dev/v1/${date}?base=EUR&symbols=GBP,AUD`,
+  (date) => `https://api.frankfurter.app/${date}?from=EUR&to=GBP,AUD`,
+];
+const FETCH_TIMEOUT_MS = 8000;
 
 /* ---------- pure ---------- */
 
@@ -87,15 +93,30 @@ export async function getRatesForDate(dateISO) {
     if (cached) return cached.rates;
   } catch { /* fall through to network */ }
 
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url(dateISO), {
+        signal: AbortSignal.timeout ? AbortSignal.timeout(FETCH_TIMEOUT_MS) : undefined,
+      });
+      if (!res.ok) continue;
+      const rates = deriveRates(await res.json());
+      if (!rates) continue;
+      await db.put('fxRates', { date: dateISO, rates });
+      return rates;
+    } catch {
+      // try the next endpoint
+    }
+  }
+  return null;
+}
+
+/* Count of observations still waiting for FX (for the settings screen). */
+export async function countPendingFx() {
   try {
-    const res = await fetch(`${API}/${dateISO}?from=EUR&to=GBP,AUD`);
-    if (!res.ok) return null;
-    const rates = deriveRates(await res.json());
-    if (!rates) return null;
-    await db.put('fxRates', { date: dateISO, rates });
-    return rates;
+    const pending = await db.getAll('observations', 'by-fx-pending', IDBKeyRange.only(1));
+    return pending.length;
   } catch {
-    return null;
+    return 0;
   }
 }
 
@@ -132,7 +153,22 @@ export async function backfillPendingFx() {
   return fixed;
 }
 
-export function initFxBackfill() {
+let lastBackfillAttempt = 0;
+
+function throttledBackfill() {
+  const now = Date.now();
+  if (now - lastBackfillAttempt < 60_000) return;
+  lastBackfillAttempt = now;
   backfillPendingFx().catch(() => {});
-  window.addEventListener('online', () => backfillPendingFx().catch(() => {}));
+}
+
+/* Retry pending FX: at app start, when the network comes back, whenever the
+ * app returns to the foreground, and every 10 minutes while open. */
+export function initFxBackfill() {
+  throttledBackfill();
+  window.addEventListener('online', () => { lastBackfillAttempt = 0; throttledBackfill(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') throttledBackfill();
+  });
+  setInterval(throttledBackfill, 10 * 60_000);
 }

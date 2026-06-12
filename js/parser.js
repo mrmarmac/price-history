@@ -149,7 +149,11 @@ export function parseReceipt(text, opts = {}) {
   const stores = opts.stores || [];
   const rawLines = String(text || '')
     .split(/\r?\n/)
-    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .map((l) => l
+      .replace(/\s+/g, ' ')
+      // OCR often splits price tokens: "3 ,29" / "3, 29" → "3,29"
+      .replace(/(\d) ?([.,]) ?(\d{2})(?!\d)/g, '$1$2$3')
+      .trim())
     .filter(Boolean);
 
   let dateISO = null;

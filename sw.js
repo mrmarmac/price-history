@@ -1,6 +1,6 @@
 /* Service worker for Price History.
  * Release process: bump CACHE_NAME on every deploy. */
-const CACHE_NAME = 'ph-v1';
+const CACHE_NAME = 'ph-v2';
 
 const PRECACHE = [
   './',
@@ -58,7 +58,7 @@ self.addEventListener('fetch', (event) => {
 
   // FX API is never SW-cached: persistence of rates lives in IndexedDB,
   // owned by the pending/backfill logic.
-  if (url.hostname === 'api.frankfurter.app') return;
+  if (url.hostname.startsWith('api.frankfurter.')) return;
 
   if (url.origin !== self.location.origin) return;
 

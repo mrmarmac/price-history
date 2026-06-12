@@ -22,20 +22,56 @@ async function loadTesseract() {
   tesseractLoaded = true;
 }
 
-/* Downscale + grayscale on a canvas: faster OCR, usually more accurate
- * for phone photos of receipts. */
-async function preprocess(file, maxEdge = 1600) {
+/* Receipt-tuned preprocessing. Receipts are tall and narrow, so scaling is
+ * driven by WIDTH (the text column), not the long edge — a long-edge cap
+ * shrinks receipt text to illegibility. Grayscale + percentile contrast
+ * stretch is done on raw pixels (ctx.filter is silently ignored on older
+ * iOS Safari). */
+async function preprocess(file, targetWidth = 1400, maxEdge = 4000) {
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  let scale = targetWidth / bitmap.width;
+  scale = Math.min(scale, maxEdge / Math.max(bitmap.width, bitmap.height), 1.5);
   const w = Math.round(bitmap.width * scale);
   const h = Math.round(bitmap.height * scale);
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.2)';
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
+
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const n = w * h;
+
+  // grayscale (Rec. 601 luma) + histogram
+  const gray = new Uint8Array(n);
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    const g = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8;
+    gray[i] = g;
+    hist[g]++;
+  }
+
+  // contrast stretch between the 2nd and 98th percentiles — normalises
+  // dim photos and shadow gradients without destroying glyph edges the
+  // way a hard global threshold would
+  let lo = 0, hi = 255, acc = 0;
+  const loCut = n * 0.02, hiCut = n * 0.98;
+  for (let g = 0; g < 256; g++) {
+    acc += hist[g];
+    if (acc <= loCut) lo = g;
+    if (acc <= hiCut) hi = g;
+  }
+  const range = Math.max(1, hi - lo);
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    const v = Math.max(0, Math.min(255, Math.round(((gray[i] - lo) * 255) / range)));
+    d[p] = d[p + 1] = d[p + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
   return canvas;
 }
 
@@ -56,7 +92,11 @@ export async function recognizeReceipt(file, onProgress = () => {}) {
       },
     });
     // PSM 4: single column of variable-size text — receipt-shaped
-    await worker.setParameters({ tessedit_pageseg_mode: '4' });
+    await worker.setParameters({
+      tessedit_pageseg_mode: '4',
+      preserve_interword_spaces: '1',
+      user_defined_dpi: '300',
+    });
     const { data } = await worker.recognize(canvas);
     return data.text || '';
   } finally {
