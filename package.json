@@ -1,0 +1,11 @@
+{
+  "name": "price-history",
+  "version": "1.0.0",
+  "description": "Personal price-tracking PWA: where have I seen the cheapest price for item X?",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test 'test/*.test.js'",
+    "serve": "python3 -m http.server 8080"
+  }
+}
