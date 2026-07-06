@@ -33,6 +33,12 @@ No backend. No account. No tracking. Your data never leaves the device.
 - **Storage** — IndexedDB. Money is stored as integer minor units. Unit prices
   are normalised to 1 kg / 1 l / 1 pc; substitutes are only compared within
   the same category *and* the same unit dimension (never grams vs millilitres).
+- **Backup** — because the data lives only on this device (and browsers can
+  evict local storage), **Lists → Backup** exports a full JSON snapshot and
+  re-imports it (Merge to add/update, or Replace to restore). The app also
+  requests persistent storage at startup and nudges you to back up if the
+  browser declines. Loyalty deals record both the price paid and the full
+  shelf price, so item detail shows the saving.
 
 ## Running locally
 
@@ -111,4 +117,4 @@ tools/         icon generator
 
 No social features, no accounts, no ML price prediction, no alerts, no web
 scraping, no backend. Future ideas (not implemented): barcode scanning,
-per-store regex templates, CSV export/import, optional sync.
+per-store regex templates, optional sync.

@@ -1,6 +1,6 @@
 /* Service worker for Price History.
  * Release process: bump CACHE_NAME on every deploy. */
-const CACHE_NAME = 'ph-v6';
+const CACHE_NAME = 'ph-v7';
 
 const PRECACHE = [
   './',
@@ -20,6 +20,8 @@ const PRECACHE = [
   './js/parser.js',
   './js/ocr.js',
   './js/search.js',
+  './js/backup.js',
+  './js/storage.js',
   './js/ui/components.js',
   './js/ui/screen-search.js',
   './js/ui/screen-item.js',
