@@ -4,6 +4,7 @@
 
 import { el, priceText, backLink, confirmDialog, toast, field, select } from './components.js';
 import * as repo from '../repo.js';
+import { findMatches } from '../match.js';
 import { parsePrice } from '../money.js';
 import {
   cheapestOf, findSubstitutes,
@@ -40,6 +41,23 @@ export async function render(container, { id }) {
     el('div.dim.small', { style: 'margin-top:4px' },
       product.brand ? product.brand + ' · ' : '',
       categories.get(product.categoryId) || 'no category'),
+    el('div.row', { style: 'margin-top:8px' },
+      el('button.btn-sm', {
+        onclick: () => mergeDialog(product, rerender),
+      }, '⤳ Merge into…'),
+      el('button.btn-sm.btn-danger', {
+        onclick: async () => {
+          if (!(await confirmDialog(`Delete "${product.name}"?`, 'Delete'))) return;
+          try {
+            await repo.deleteProduct(product.id);
+            toast('Item deleted', 'good');
+            location.hash = '#/search';
+          } catch (err) {
+            toast(err.message, 'bad');
+          }
+        },
+      }, 'Delete item'),
+    ),
   );
 
   /* cheapest for the canonical product (any size) */
@@ -159,6 +177,37 @@ function editProductDialog(product, categoryList, done) {
   });
 }
 
+/* Merge this product's prices into another product, then delete this one.
+ * Likely duplicates (fuzzy name/brand match) are offered first. */
+async function mergeDialog(product, done) {
+  const others = (await repo.listProducts()).filter((p) => p.id !== product.id);
+  if (!others.length) { toast('No other item to merge into', 'bad'); return; }
+  const likely = findMatches({ name: product.name, brand: product.brand }, others, 5)
+    .map((m) => m.product);
+  const likelyIds = new Set(likely.map((p) => p.id));
+  const rest = others.filter((p) => !likelyIds.has(p.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const ordered = [...likely, ...rest];
+
+  const sel = select(
+    ordered.map((p) => ({
+      value: p.id,
+      label: (likelyIds.has(p.id) ? '★ ' : '') + p.name + (p.brand ? ` · ${p.brand}` : ''),
+    })),
+    ordered[0].id,
+  );
+  showDialog(`Merge "${product.name}" into…`, [
+    el('p.small.dim', { style: 'margin:0' },
+      'All prices from this item move to the chosen item, then this item is removed. ★ = likely duplicate.'),
+    field('Keep this item', sel),
+  ], async () => {
+    const target = sel.value;
+    const { movedObservations } = await repo.mergeProducts(target, product.id);
+    toast(`Merged ${movedObservations} price${movedObservations === 1 ? '' : 's'}`, 'good');
+    location.hash = '#/item/' + target;
+  }, 'Merge');
+}
+
 function editObservationDialog(obs, pkg, storeList, done) {
   const storeSel = select(
     storeList.map((s) => ({ value: s.id, label: `${s.name} (${s.country})` })),
@@ -201,7 +250,7 @@ function editObservationDialog(obs, pkg, storeList, done) {
   });
 }
 
-function showDialog(title, fields, onSave) {
+function showDialog(title, fields, onSave, saveLabel = 'Save') {
   const dlg = el('dialog', {},
     el('div.stack', {},
       el('h2', { style: 'margin:0' }, title),
@@ -217,7 +266,7 @@ function showDialog(title, fields, onSave) {
               toast(err.message, 'bad');
             }
           },
-        }, 'Save'),
+        }, saveLabel),
       ),
     ),
   );

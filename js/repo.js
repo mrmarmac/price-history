@@ -191,6 +191,73 @@ export async function deleteObservation(id) {
   return db.del('observations', id);
 }
 
+/* ---------- delete / merge products ---------- */
+
+/* Delete a product only when it has no price observations — the user must
+ * merge it into another product (or delete its prices) first. Cascades to
+ * its now-orphan packages. */
+export async function deleteProduct(id) {
+  const obs = await getObservationsForProduct(id);
+  if (obs.length) {
+    throw new Error('This item still has prices — merge it into another item, or delete its prices first.');
+  }
+  const packages = await getPackagesForProduct(id);
+  await db.withTx(['products', 'packages'], (tx) => {
+    for (const p of packages) tx.objectStore('packages').delete(p.id);
+    tx.objectStore('products').delete(id);
+  });
+}
+
+/* Pure: map each source package to a target package, reusing a target
+ * package with identical size+unit or scheduling a new one. Returns
+ * { map: Map(srcPkgId → targetPkgId), newPkgs: [package] }. */
+export function planPackageMap(targetId, targetPkgs, srcPkgs, uuidFn) {
+  const pool = [...targetPkgs];
+  const map = new Map();
+  const newPkgs = [];
+  for (const sp of srcPkgs) {
+    let tp = pool.find((p) => p.size === sp.size && p.unit === sp.unit);
+    if (!tp) {
+      tp = { id: uuidFn(), productId: targetId, size: sp.size, unit: sp.unit };
+      pool.push(tp);
+      newPkgs.push(tp);
+    }
+    map.set(sp.id, tp.id);
+  }
+  return { map, newPkgs };
+}
+
+/* Merge sourceId into targetId: repoint every source observation
+ * (productId + packageId) onto the target, reusing equal-size packages;
+ * delete the source's packages and the source product. Frozen fx/size/
+ * unit/price on each observation are untouched, so historical values and
+ * cheapest-price queries stay correct. */
+export async function mergeProducts(targetId, sourceId) {
+  if (targetId === sourceId) throw new Error('Pick two different items to merge');
+  const target = await getProduct(targetId);
+  const source = await getProduct(sourceId);
+  if (!target || !source) throw new Error('Item not found');
+
+  const targetPkgs = await getPackagesForProduct(targetId);
+  const srcPkgs = await getPackagesForProduct(sourceId);
+  const srcObs = await getObservationsForProduct(sourceId);
+  const { map, newPkgs } = planPackageMap(targetId, targetPkgs, srcPkgs, db.uuid);
+
+  await db.withTx(['products', 'packages', 'observations'], (tx) => {
+    const pkgStore = tx.objectStore('packages');
+    const obsStore = tx.objectStore('observations');
+    for (const np of newPkgs) pkgStore.put(np);
+    for (const o of srcObs) {
+      o.productId = targetId;
+      o.packageId = map.get(o.packageId) || o.packageId;
+      obsStore.put(o);
+    }
+    for (const sp of srcPkgs) pkgStore.delete(sp.id);
+    tx.objectStore('products').delete(sourceId);
+  });
+  return { movedObservations: srcObs.length };
+}
+
 /* Editing an observation = rewrite through the same validated path,
  * with FX recomputed for the (possibly corrected) receipt date. */
 export async function updateObservation(id, changes) {
