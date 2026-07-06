@@ -4,6 +4,7 @@
 import { openDB } from './db.js';
 import { route, startRouter } from './router.js';
 import { initFxBackfill } from './fx.js';
+import { ensurePersistence } from './storage.js';
 
 import * as screenSearch from './ui/screen-search.js';
 import * as screenItem from './ui/screen-item.js';
@@ -23,6 +24,8 @@ route('settings', screenSettings.render);
 
 async function boot() {
   await openDB();
+  // ask for persistent storage up front (result cached for the Settings screen)
+  ensurePersistence().then((s) => { window.__persistence = s; }).catch(() => {});
   initFxBackfill();
   startRouter(document.getElementById('app'));
 

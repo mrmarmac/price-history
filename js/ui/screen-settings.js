@@ -4,6 +4,7 @@ import { el, field, select, toast, confirmDialog } from './components.js';
 import { getDisplayCurrency, setDisplayCurrency } from '../search.js';
 import { countPendingFx, backfillPendingFx } from '../fx.js';
 import { exportBackup, importBackup, validateBackup, backupCounts } from '../backup.js';
+import { ensurePersistence, persistenceMessage } from '../storage.js';
 
 export async function render(container) {
   const currency = await getDisplayCurrency();
@@ -84,9 +85,16 @@ function backupCard() {
     }
   });
 
+  const persistWarn = el('p.small', { style: 'margin:0' });
+  ensurePersistence().then((state) => {
+    const msg = persistenceMessage(state);
+    if (msg) persistWarn.append(el('span.badge.warn', {}, '⚠ ' + msg));
+  }).catch(() => {});
+
   return el('div.card.stack', {},
     el('p.small.dim', { style: 'margin:0' },
       'Your data lives only on this device. Export regularly — a browser can evict local storage, and the file restores everything to any device.'),
+    persistWarn,
     exportBtn,
     el('button', { onclick: () => fileInput.click() }, 'Import backup…'),
     fileInput,
