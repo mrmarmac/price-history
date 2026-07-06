@@ -6,7 +6,7 @@
 
 import * as db from './db.js';
 import * as repo from './repo.js';
-import { tokenize } from './normalize.js';
+import { tokenize, normalizeName, diceSimilarity } from './normalize.js';
 import { roundMinor } from './money.js';
 import { toReferenceQuantity, dimension } from './units.js';
 
@@ -82,11 +82,56 @@ export async function findSubstitutes(product, currency, limit = 5) {
 /* Token-prefix search over products (AND across query tokens).
  * Product tokens include dictionary EN translations at write time, so
  * searching "milk" finds "Vollmilch". Empty query → all products. */
+/* Pure relevance score of a product against a raw query, 0..100.
+ * Tiers: exact normalised name (100) > name starts-with query (80) >
+ * an exact query token in the product's tokens, incl. dictionary
+ * translations (60) > whole-name fuzzy similarity (≤40) > no match (0). */
+export function scoreRelevance(product, queryRaw) {
+  const q = normalizeName(queryRaw || '');
+  if (!q) return 0;
+  const name = product.nameNormalized || normalizeName(product.name || '');
+  if (name === q) return 100;
+  if (name.startsWith(q)) return 80;
+  const productTokens = new Set(product.tokens || tokenize(product.name || ''));
+  let score = 0;
+  for (const t of tokenize(queryRaw)) {
+    if (productTokens.has(t)) { score = Math.max(score, 60); }
+  }
+  score = Math.max(score, Math.round(40 * diceSimilarity(queryRaw, product.name || '')));
+  return score;
+}
+
+/* Pure ranking: relevance desc → latest observation date desc (recency)
+ * → name asc. metaById maps productId → { latestDate }. */
+export function rankProducts(products, queryRaw, metaById = {}) {
+  return [...products].sort((a, b) => {
+    const rb = scoreRelevance(b, queryRaw);
+    const ra = scoreRelevance(a, queryRaw);
+    if (rb !== ra) return rb - ra;
+    const da = (metaById[a.id] && metaById[a.id].latestDate) || '';
+    const dbb = (metaById[b.id] && metaById[b.id].latestDate) || '';
+    if (da !== dbb) return dbb.localeCompare(da);
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/* Latest observation date per product, for recency ranking. Single-user:
+ * one pass over all observations is cheap. */
+async function latestDatesByProduct() {
+  const all = await db.getAll('observations');
+  const meta = {};
+  for (const o of all) {
+    const cur = meta[o.productId];
+    if (!cur || o.date > cur.latestDate) meta[o.productId] = { latestDate: o.date };
+  }
+  return meta;
+}
+
 export async function searchProducts(query) {
+  const meta = await latestDatesByProduct();
   const tokens = tokenize(query || '');
   if (!tokens.length) {
-    const all = await repo.listProducts();
-    return all.sort((a, b) => a.name.localeCompare(b.name));
+    return rankProducts(await repo.listProducts(), query || '', meta);
   }
   let ids = null;
   for (const t of tokens) {
@@ -94,8 +139,8 @@ export async function searchProducts(query) {
     ids = ids === null ? set : new Set([...ids].filter((id) => set.has(id)));
     if (!ids.size) return [];
   }
-  const products = await Promise.all([...ids].map((id) => repo.getProduct(id)));
-  return products.filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
+  const products = (await Promise.all([...ids].map((id) => repo.getProduct(id)))).filter(Boolean);
+  return rankProducts(products, query, meta);
 }
 
 /* Display currency preference (meta store), default EUR. */
