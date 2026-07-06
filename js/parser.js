@@ -156,6 +156,7 @@ function makeDraft(raw) {
     size: 1,
     unit: 'pcs',
     perItemMinor: null,
+    fullMinor: null,
     price_type: 'single',
     discountMinor: 0,
     confidence: 'high',
@@ -165,7 +166,10 @@ function makeDraft(raw) {
 function finishDraft(d) {
   d.suggestedName = suggestEnglishName(d.name);
   if (d.discountMinor !== 0) {
-    d.totalMinor = (d.totalMinor ?? 0) + d.discountMinor;
+    // the printed price is the shelf/full (non-loyalty) price; the net after
+    // the discount is what was actually paid.
+    d.fullMinor = d.totalMinor ?? 0;
+    d.totalMinor = d.fullMinor + d.discountMinor;
     d.price_type = 'promo';
   }
   return d;

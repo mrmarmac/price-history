@@ -364,9 +364,10 @@ export async function runWizard(container, { manual }) {
               obs: {
                 storeId: state.meta.storeId,
                 total_price: result.totalMinor,
+                full_price: result.full_price ?? null,
                 currency: state.meta.currency,
                 quantity: result.quantity,
-                price_type: line.discountMinor ? 'promo' : result.price_type,
+                price_type: (line.discountMinor || result.full_price) ? 'promo' : result.price_type,
                 date: state.meta.date || today(),
               },
             };
@@ -414,6 +415,10 @@ export async function runWizard(container, { manual }) {
     const dealUnit = select(UNITS.map((u) => ({ value: u, label: u })), line.unit);
     const dealTotal = el('input', { value: moneyVal(line.totalMinor), inputmode: 'decimal', placeholder: '5.00' });
 
+    // optional full (non-loyalty / pre-offer) price — e.g. Tesco Clubcard,
+    // where the shelf price differs from what a member pays.
+    const fullPrice = el('input', { value: moneyVal(line.fullMinor), inputmode: 'decimal', placeholder: 'optional' });
+
     /* weighed mode: per-unit price ⇄ total stay in sync */
     function syncWeighed(from) {
       const qty = num(weighedQty);
@@ -433,7 +438,7 @@ export async function runWizard(container, { manual }) {
     weighedUnit.addEventListener('change', () => syncWeighed('qty'));
     weighedPer.addEventListener('input', () => syncWeighed('per'));
     weighedTotal.addEventListener('input', () => syncWeighed('total'));
-    for (const i of [packSize, packTotal, packCount, dealCount, dealSize, dealTotal]) {
+    for (const i of [packSize, packTotal, packCount, dealCount, dealSize, dealTotal, fullPrice]) {
       i.addEventListener('input', updatePreview);
     }
     for (const s of [packUnit, dealUnit]) s.addEventListener('change', updatePreview);
@@ -468,6 +473,7 @@ export async function runWizard(container, { manual }) {
         body.append(
           el('div.field-row', {}, field('Pack size', packSize), field('Unit', packUnit)),
           el('div.field-row', {}, field(`Total paid (${currency})`, packTotal), field('Packs bought', packCount)),
+          field(`Full price before offer (${currency})`, fullPrice),
         );
       } else if (mode === 'weighed') {
         body.append(
@@ -480,12 +486,21 @@ export async function runWizard(container, { manual }) {
         body.append(
           el('div.field-row', {}, field('Items in deal', dealCount), field('Size of one item', el('div.field-row', {}, dealSize, dealUnit))),
           field(`Deal total paid (${currency})`, dealTotal),
+          field(`Full price before offer (${currency})`, fullPrice),
         );
       }
       updatePreview();
     }
 
-    /* read() → {pkg, totalMinor, quantity, price_type} or {error} */
+    /* the optional full price, only when it is set and >= paid */
+    function readFull(paidMinor) {
+      const f = parsePrice(fullPrice.value);
+      if (!f || f.minor <= 0) return null;
+      if (f.minor < paidMinor) return { error: 'Full price cannot be below the price paid' };
+      return { minor: f.minor };
+    }
+
+    /* read() → {pkg, totalMinor, quantity, price_type, full_price} or {error} */
     function read() {
       if (mode === 'pack') {
         const size = num(packSize);
@@ -493,11 +508,14 @@ export async function runWizard(container, { manual }) {
         const count = Math.max(1, Math.round(num(packCount) ?? 1));
         if (!size || size <= 0) return { error: 'Pack size must be greater than zero' };
         if (!total || total.minor <= 0) return { error: 'Enter the total you paid' };
+        const full = readFull(total.minor);
+        if (full && full.error) return { error: full.error };
         return {
           pkg: { size, unit: packUnit.value },
           totalMinor: total.minor,
           quantity: count,
           price_type: count > 1 ? 'per_unit' : 'single',
+          full_price: full ? full.minor : null,
         };
       }
       if (mode === 'weighed') {
@@ -517,11 +535,14 @@ export async function runWizard(container, { manual }) {
       const total = parsePrice(dealTotal.value);
       if (!size || size <= 0) return { error: 'Enter the size of one item' };
       if (!total || total.minor <= 0) return { error: 'Enter the deal total' };
+      const full = readFull(total.minor);
+      if (full && full.error) return { error: full.error };
       return {
         pkg: { size, unit: dealUnit.value },
         totalMinor: total.minor,
         quantity: count,
         price_type: 'bundle',
+        full_price: full ? full.minor : null,
       };
     }
 
@@ -536,6 +557,10 @@ export async function runWizard(container, { manual }) {
       const up = computeUnitPrice(r.totalMinor, r.pkg.size, r.pkg.unit, r.quantity);
       if (up) parts.push(`${formatMinor(up.unit_price, currency)} / ${up.reference_unit}`);
       if (parts.length) preview.append(el('span.badge.good', {}, '= ' + parts.join(' · ')));
+      if (r.full_price && r.full_price > r.totalMinor) {
+        preview.append(' ', el('span.badge.warn', {},
+          `save ${formatMinor(r.full_price - r.totalMinor, currency)}`));
+      }
     }
 
     drawBody();

@@ -112,6 +112,12 @@ export function validateObservation(o) {
   if (!Number.isFinite(o.size) || o.size <= 0) errors.push('Size must be greater than zero');
   if (!isValidUnit(o.unit)) errors.push('Invalid unit');
   if (!PRICE_TYPES.includes(o.price_type)) errors.push('Invalid price type');
+  // optional full (non-loyalty/pre-offer) price: if present it must be a whole
+  // number of minor units and cannot be cheaper than what was actually paid
+  if (o.full_price != null) {
+    if (!Number.isInteger(o.full_price)) errors.push('Full price must be a whole amount');
+    else if (o.full_price < o.total_price) errors.push('Full price cannot be below the price paid');
+  }
   // impossible unit combinations: weight-priced lines must use a weighable unit
   if ((o.price_type === 'weighted' || o.price_type === 'per_weight') &&
       dimension(o.unit) === 'count') {
@@ -148,6 +154,7 @@ export async function saveEntry({ product, pkg, obs }) {
     storeId: obs.storeId,
     country: obs.country || (store ? store.country : null),
     total_price: obs.total_price,
+    full_price: Number.isInteger(obs.full_price) ? obs.full_price : null,
     currency: obs.currency,
     quantity: obs.quantity ?? 1,
     size: pack.size,

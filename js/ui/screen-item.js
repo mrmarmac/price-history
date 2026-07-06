@@ -109,6 +109,7 @@ export async function render(container, { id }) {
         ),
         el('div.small.dim', {}, `${stores.get(obs.storeId)?.name || '?'} · ${obs.date}`),
         unitLineAll(obs),
+        savingLine(obs),
         fxLine(obs),
       ),
       el('button.btn-sm', {
@@ -165,6 +166,7 @@ function editObservationDialog(obs, pkg, storeList, done) {
   );
   const date = el('input', { type: 'date', value: obs.date });
   const price = el('input', { value: (obs.total_price / 100).toFixed(2), inputmode: 'decimal' });
+  const full = el('input', { value: obs.full_price != null ? (obs.full_price / 100).toFixed(2) : '', inputmode: 'decimal', placeholder: 'optional' });
   const curSel = select(ALL_CURRENCIES.map((c) => ({ value: c, label: c })), obs.currency);
   const qty = el('input', { value: obs.quantity, type: 'number', min: 1 });
   const size = el('input', { value: pkg ? pkg.size : obs.size, inputmode: 'decimal' });
@@ -172,13 +174,15 @@ function editObservationDialog(obs, pkg, storeList, done) {
   showDialog('Edit observation', [
     field('Store', storeSel),
     el('div.field-row', {}, field('Date', date), field('Currency', curSel)),
-    el('div.field-row', {}, field('Total price', price), field('Quantity', qty)),
-    el('div.field-row', {}, field('Size', size), field('Unit', unitSel)),
+    el('div.field-row', {}, field('Price paid', price), field('Full price before offer', full)),
+    el('div.field-row', {}, field('Quantity', qty), field('Size', size)),
+    field('Unit', unitSel),
     el('p.small.dim', { style: 'margin:0' },
       'Changing date or currency recomputes the FX equivalents for the new receipt date.'),
   ], async () => {
     const p = parsePrice(price.value);
     if (!p) throw new Error('Enter a valid price');
+    const f = parsePrice(full.value);
     const sz = Number(String(size.value).replace(',', '.'));
     await repo.updateObservation(obs.id, {
       pkg: { size: sz, unit: unitSel.value },
@@ -187,6 +191,7 @@ function editObservationDialog(obs, pkg, storeList, done) {
         country: null, // re-derived from the store
         date: date.value,
         total_price: p.minor,
+        full_price: f ? f.minor : null,
         currency: curSel.value,
         quantity: Number(qty.value) || 1,
       },
@@ -261,6 +266,14 @@ function unitLineAll(obs) {
   }
   if (!parts.length) return null;
   return el('div.small.dim', {}, parts.join(' · '));
+}
+
+/* Loyalty/offer saving vs the full (non-member) price, when recorded. */
+function savingLine(obs) {
+  if (obs.full_price == null || obs.full_price <= obs.total_price) return null;
+  const saved = obs.full_price - obs.total_price;
+  return el('div.small', {}, el('span.badge.good', {},
+    `saved ${priceText(saved, obs.currency)} vs ${priceText(obs.full_price, obs.currency)}`));
 }
 
 function fxLine(obs) {

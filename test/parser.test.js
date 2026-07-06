@@ -126,13 +126,18 @@ test('Tesco: multi-buy bundle, Clubcard discount, weighed bananas, UK date', () 
   assert.equal(eggs.quantity, 2);
   assert.equal(eggs.discountMinor, -80);
   assert.equal(eggs.totalMinor, 580 - 80);
+  assert.equal(eggs.fullMinor, 580); // shelf/full price kept distinct from paid
   assert.equal(eggs.price_type, 'promo'); // bundle + attached discount → promo
   assert.equal(eggs.perItemMinor, 290);
 
   // single item with Clubcard discount
   const butter = byName(r.lines, 'anchor');
   assert.equal(butter.totalMinor, 260 - 90);
+  assert.equal(butter.fullMinor, 260); // full (non-loyalty) price
   assert.equal(butter.price_type, 'promo');
+
+  // undiscounted lines carry no full price
+  assert.equal(byName(r.lines, 'dates').fullMinor, null);
 
   // weighed bananas: item line first, weight detail after
   const bananas = byName(r.lines, 'bananas loose');
